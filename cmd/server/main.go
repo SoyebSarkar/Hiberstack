@@ -9,13 +9,13 @@ import (
 )
 
 func main() {
-	cfg := config.Default()
+	cfg := config.Load()
 
 	p, err := proxy.New(cfg.Typesense.URL)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	log.Println("server started on", cfg.Port)
+	log.Println("hiberstack listening on", cfg.Port)
 	http.ListenAndServe(":"+cfg.Port, p)
 }
