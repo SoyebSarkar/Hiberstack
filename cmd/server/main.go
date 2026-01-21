@@ -6,7 +6,9 @@ import (
 
 	"github.com/SoyebSarkar/Hiberstack/internal/config"
 	"github.com/SoyebSarkar/Hiberstack/internal/engine/typesense"
+	"github.com/SoyebSarkar/Hiberstack/internal/lifecycle"
 	"github.com/SoyebSarkar/Hiberstack/internal/proxy"
+	"github.com/SoyebSarkar/Hiberstack/internal/scheduler"
 	"github.com/SoyebSarkar/Hiberstack/internal/state"
 )
 
@@ -18,13 +20,20 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	lifecycleMgr := lifecycle.NewManager(
+		ts,
+		cfg.SnapshotDir,
+		stateStore,
+	)
+	scheduler := scheduler.New(
+		stateStore,
+		lifecycleMgr,
+		cfg.OffloadAfter,
+	)
 
-	reloader := &Reloader{
-		ts:          ts,
-		snapshotDir: cfg.SnapshotDir,
-		stateStore:  stateStore,
-	}
-	proxy, err := proxy.New(cfg.Typesense.URL, reloader, stateStore)
+	scheduler.Start()
+
+	proxy, err := proxy.New(cfg.Typesense.URL, lifecycleMgr, stateStore)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -32,7 +41,7 @@ func main() {
 	mux := http.NewServeMux()
 
 	// 1️⃣ Register admin routes FIRST
-	registerAdmin(mux, ts, cfg.SnapshotDir, stateStore)
+	registerAdmin(mux, ts, cfg.SnapshotDir, lifecycleMgr, stateStore)
 
 	// 2️⃣ Attach proxy as fallback
 	mux.Handle("/", proxy)

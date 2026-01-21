@@ -6,6 +6,13 @@ import (
 	"time"
 )
 
+type ReloadMode string
+
+const (
+	ReloadAsync    ReloadMode = "async"
+	ReloadBlocking ReloadMode = "blocking"
+)
+
 type Config struct {
 	Typesense struct {
 		URL    string

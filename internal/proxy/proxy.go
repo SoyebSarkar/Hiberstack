@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/SoyebSarkar/Hiberstack/internal/lifecycle"
 	"github.com/SoyebSarkar/Hiberstack/internal/state"
 )
 
@@ -18,15 +19,15 @@ type Reloader interface {
 }
 
 type Proxy struct {
-	rp         *httputil.ReverseProxy
-	reloader   Reloader
-	stateStore *state.Store
-	inflight   sync.Map
+	rp           *httputil.ReverseProxy
+	lifecycleMgr *lifecycle.Manager
+	stateStore   *state.Store
+	inflight     sync.Map
 }
 
 func New(
 	target string,
-	reloader Reloader,
+	lifecycleMgr *lifecycle.Manager,
 	stateStore *state.Store,
 ) (*Proxy, error) {
 	u, err := url.Parse(target)
@@ -35,20 +36,25 @@ func New(
 	}
 
 	p := &Proxy{
-		reloader:   reloader,
-		stateStore: stateStore,
+		lifecycleMgr: lifecycleMgr,
+		stateStore:   stateStore,
 	}
 
 	rp := httputil.NewSingleHostReverseProxy(u)
 
 	rp.ModifyResponse = func(resp *http.Response) error {
-		// Only care about 404s
-		if resp.StatusCode != http.StatusNotFound {
-			return nil
-		}
 
 		collection := extractCollection(resp.Request.URL.Path)
 		if collection == "" {
+			return nil
+		}
+
+		if resp.StatusCode < 400 {
+			p.stateStore.Touch(collection)
+		}
+
+		// Only care about 404s
+		if resp.StatusCode != http.StatusNotFound {
 			return nil
 		}
 
@@ -63,11 +69,9 @@ func New(
 		if current == state.Cold {
 			log.Println("cold collection hit:", collection)
 
-			p.stateStore.Set(collection, state.Loading)
-
 			if _, loaded := p.inflight.LoadOrStore(collection, true); !loaded {
 				go func() {
-					p.reloader.Reload(collection)
+					p.lifecycleMgr.Reload(collection)
 					p.inflight.Delete(collection)
 				}()
 			}
@@ -89,6 +93,18 @@ func New(
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if isWriteRequest(r) {
+		collection := extractCollection(r.URL.Path)
+		if collection != "" {
+			st := p.stateStore.Get(collection)
+			if st == state.Draining {
+				w.WriteHeader(http.StatusConflict)
+				w.Write([]byte(`{"message":"collection is draining, writes are temporarily disabled"}`))
+				return
+			}
+		}
+	}
+
 	p.rp.ServeHTTP(w, r)
 }
 
@@ -114,4 +130,13 @@ func replaceWithWarming(resp *http.Response) error {
 	resp.Header.Set("Content-Type", "application/json")
 	resp.Header.Set("Retry-After", "2")
 	return nil
+}
+
+func isWriteRequest(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
 }
